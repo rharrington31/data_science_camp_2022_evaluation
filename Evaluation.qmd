@@ -1,0 +1,419 @@
+---
+title: "Data Science Camp Evaluation"
+format: html
+execute:
+  echo: false
+  warning: false
+---
+
+
+
+```{r libraries}
+if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load(
+  tidyverse, 
+  googlesheets4,
+  janitor,
+  tidytext,
+  SnowballC,
+  plotly
+)
+
+data("stop_words")
+
+# This sets the style of the graphs.
+theme_set(theme_minimal())
+```
+
+```{r}
+read_survey <- function(url) {
+  
+  googlesheets4::read_sheet(url) %>% 
+    select(-any_of(c("Name", "Timestamp", "Email")))
+  
+}
+```
+
+```{r ingestion}
+day01_begin <- 
+  read_survey("https://docs.google.com/spreadsheets/d/1DtKLFzAIz5fdS4uq-CjirDRB-zu-TyDm93iu4bf1_sw/edit#gid=941360136") %>% 
+  rename(`On a scale of 1 to 10, how would you rate your knowledge and experience with Data Science?` = "One a scale of 1 to 10, how would you rate your knowledge and experience with Data Science?")
+
+ day01_middle <- 
+  read_survey("https://docs.google.com/spreadsheets/d/1CHJK605JFCyvqTu90kNI0F8CPwBn-NdKPVSByaAvTU4/edit#gid=1214373144")
+ 
+ day01_end <- 
+  read_survey("https://docs.google.com/spreadsheets/d/1RicT8kdCHfKq9IRoHY-FHG3iCET3kzy788YK0WFIuek/edit#gid=1351849497")
+ 
+ day02_middle <- 
+  read_survey("https://docs.google.com/spreadsheets/d/1zQUXYiMs9FwfSmkpisP0OTDyswRV0GT2Tzab59YxbK8/edit?resourcekey#gid=1135611478")
+ 
+ day02_end <- 
+  read_survey("https://docs.google.com/spreadsheets/d/1X8dfhOgiXIVaaMrEQYPYsuwmu9WhYNqIB-JMQ5T-kfw/edit?resourcekey#gid=208932273")
+ 
+ day03_middle <- 
+  read_survey("https://docs.google.com/spreadsheets/d/19F3uBWsmYIjHfpebozRtUlOH2fmBw1CRIW_2f-4bF-I/edit?resourcekey#gid=2127108050")
+ 
+ day03_end <- 
+  read_survey("https://docs.google.com/spreadsheets/d/1GsTzxgFChofPk_GiVYbB9AvtMAE7CME1t4oYUw3Qsts/edit?resourcekey#gid=1658558811") %>% 
+   mutate(across(everything(), as.character))
+```
+
+```{r}
+surveys <-
+  day01_begin %>% 
+  left_join(day01_middle, by = "Email Address") %>% 
+  left_join(day01_end,    by = "Email Address") %>% 
+  left_join(day02_middle, by = "Email Address") %>% 
+  left_join(day02_end,    by = "Email Address") %>% 
+  left_join(day03_middle, by = "Email Address") %>% 
+  left_join(day03_end,    by = "Email Address")
+```
+
+```{r}
+surveys_num <- 
+  surveys %>% 
+  select(`Email Address`, where(is.numeric)) %>% 
+  rename(`Day 1` = "On a scale of 1 to 10, how would you rate your knowledge and experience with Data Science?",
+         `Day 3` = "How would you rate your knowledge and experience with Data Science?")# %>% 
+  # mutate(`Day 3` = if_else(is.na(`Day 3`), `Day 1`, `Day 3`)) 
+
+surveys_num_long <- 
+  surveys_num %>% 
+  pivot_longer(cols = -`Email Address`,
+               names_to = "day",
+               values_to = "response")
+```
+
+# Overall
+
+### On a scale of 1 to 10, how would you rate your knowledge and experience with Data Science?
+
+```{r}
+{
+  
+  surveys_num_long %>% 
+    group_by(day) %>% 
+    mutate(flag = ! is.na(response),
+           num_response = sum(flag),
+           day_n = glue::glue("{day} (n = {num_response})")) %>% 
+    ungroup() %>% 
+    count(day,day_n, response) %>% 
+    mutate(participants = if_else(n == 1, "participant", "participants")) %>% 
+    ggplot(aes(x = response,
+               y = n,
+               text = glue::glue("{n} {participants} selected a {response} on {day}"))) + 
+    geom_col(fill = "navy") +
+    scale_x_continuous(breaks = seq(1, 10)) +
+    expand_limits(x = c(1, 10)) +
+    facet_grid(~ day_n) +
+    labs(x = "Level of comfort",
+         y = "") +
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major.x = element_blank(),
+          panel.spacing = unit(2, "lines"),
+          strip.text = element_text(face = "bold"))
+  
+} %>% 
+  ggplotly(tooltip = "text")
+```
+
+### Change in individual level of comfort from Day 1 to Day 3
+
+```{r}
+{
+  surveys_num %>% 
+    rowwise() %>% 
+    mutate(average = mean(c(`Day 1`, `Day 3`) )) %>% 
+    ungroup() %>% 
+    mutate(difference = `Day 3` - `Day 1`,
+           diff_abs = abs(difference),
+           change_text = case_when(
+             difference < 0 ~ glue::glue("The participant's level of comfort decreased by {diff_abs} from {`Day 1`} to {`Day 3`}"),
+             difference == 0 ~ "The participant's level of comfort stayed the same",
+             difference > 0 ~ glue::glue("The participant's level of comfort increased by {diff_abs} from {`Day 1`} to {`Day 3`}"),
+             is.na(difference) ~ glue::glue("The participant's level of comfort on Day 1 was {`Day 1`}. They were not assessed on Day 3.")
+           )) %>% 
+    arrange(average) %>% 
+    mutate(person = str_c("Person", 1:n(), sep = " "),
+           person = fct_reorder(person, average),
+           `Email Address` = fct_reorder(`Email Address`, average)) %>% 
+    ggplot() +
+    geom_segment(aes(x = `Day 1`,
+                     xend = `Day 3`,
+                     y = `Email Address`,
+                     yend = `Email Address`,
+                     text = change_text),
+                 arrow = arrow(length = unit(0.15,"cm")),
+                 color = "navy") +
+    geom_point(aes(x = `Day 1`,
+                   y = `Email Address`,
+                   text = change_text),
+               color = "navy") +
+    scale_x_continuous(breaks = seq(1, 10)) +
+    expand_limits(x = c(1, 10)) +
+    labs(x = "Level of Comfort",
+         y = "") +
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major.y = element_blank())
+} %>% 
+  ggplotly(tooltip = "text")
+```
+
+### Count of participants by change in level of comfort
+
+```{r}
+{
+  surveys_num %>% 
+    mutate(difference = `Day 3` - `Day 1`) %>%
+    count(difference) %>% 
+    mutate(participants = if_else(n == 1, "participant's", "participants'")) %>% 
+    mutate(diff_abs = abs(difference),
+           change_text = case_when(
+             difference < 0 ~ glue::glue("{n} {participants} level of comfort decreased by {diff_abs}"),
+             difference == 0 ~ "{n} {participants} level of comfort stayed the same",
+             difference > 0 ~ glue::glue("{n} {participants} level of comfort increased by {diff_abs}")
+           )) %>% 
+    ggplot(aes(x = difference,
+               y = n,
+               text = change_text)) +
+    geom_col(fill = "navy") +
+    labs(x = "Change in Level of Comfort",
+         y = "") +
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major.x = element_blank())
+} %>% 
+  ggplotly(tooltip = "text")
+```
+
+
+
+```{r}
+surveys_text <-
+  surveys %>% 
+  select(where(is.character)) %>% 
+  pivot_longer(cols = -`Email Address`,
+               names_to = "question",
+               values_to = "response")
+```
+
+```{r}
+tokenize_text <- function(df) {
+  
+  df %>% 
+    unnest_tokens(word, response) %>% 
+    anti_join(stop_words) %>% 
+    mutate(stem = wordStem(word))
+  
+} 
+
+survey_tokens <- 
+  surveys_text %>% 
+  tokenize_text()
+```
+
+```{r}
+graph_token_freq <- function(df, 
+                             field, 
+                             n = 10,
+                             remove_data_science = TRUE,
+                             include_title = FALSE,
+                             remove_stems = NULL,
+                             plotly = TRUE) {
+  
+  if (remove_data_science) {
+    
+    df <- 
+      df %>% 
+      filter(! stem %in% c("data", "scienc"))
+    
+  }
+  
+  plot <- 
+    df %>% 
+    filter(question == field,
+           ! stem %in% remove_stems) %>% 
+    count(question, stem, name = "count") %>% 
+    arrange(desc(count)) %>% 
+    filter(! is.na(stem)) %>% 
+    slice(1:n) %>% 
+    mutate(stem = fct_reorder(stem, count),
+           instance = if_else(count == 1, "instance", "instances")) %>% 
+    ggplot(aes(x = count,
+               y = stem,
+               text = glue::glue("{count} {instance}"))) +
+    geom_col(fill = "navy") +
+    labs(x = "",
+         y = "") +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_blank())
+  
+  if (include_title) {
+    
+    plot <- 
+      plot + 
+      labs(title = field)
+    
+  } 
+  
+  if (plotly) {
+    
+    plot %>% ggplotly(tooltip = "text")
+    
+  } else {
+    
+    plot
+    
+  }
+  
+}
+```
+
+
+# Day 1
+
+## Beginning
+
+### What is your working definition of Data Science?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("What is your working definition of Data Science? (You will have opportunities over the course of the 3 days to revise your thinking.)")
+```
+
+## Middle
+
+### How are you already or how might you incorporate some hard and soft skills into your classroom?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("How are you already or how might you incorporate some hard and soft skills into your classroom?")
+```
+
+
+### In what ways does your curricular tool(s) facilitate data science learning already?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("In what ways does your curricular tool(s) facilitate data science learning already?")
+```
+
+## End
+
+### How has your working definition of Data Science changed?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("How has your working definition of Data Science changed?.x")
+```
+
+### How are concepts presented today related to secondary education?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("How are concepts presented today related to secondary education?")
+```
+
+### Based on your experience in Day 1 of Data Science Camp, what questions do you have?  What do you hope to learn over the next two days?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("Based on your experience in Day 1 of Data Science Camp, what questions do you have?  What do you hope to learn over the next two days?")
+```
+
+### At this point, what are some benefits you see Data Science in the secondary classroom?  What challenges do you see?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("At this point, what are some benefits you see Data Science in the secondary classroom?  What challenges do you see?")
+```
+
+# Day 2
+
+## Middle
+
+### What is one take-away from this morning that you would like to implement in your classroom?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("What is one take-away from this morning that you would like to implement in your classroom?")
+```
+
+### What challenges might your students encounter with the DS8 material?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("What challenges might your students encounter with the DS8 material?")
+```
+
+## End
+
+### How has your working definition of Data Science changed?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("How has your working definition of Data Science changed?.y")
+```
+
+### What is one take-away from this afternoon session that you would like to implement in your classroom?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("What is one take-away from this afternoon session that you would like to implement in your classroom?")
+```
+
+### How can Data Science improve math education equality?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("How can Data Science improve math education equality?")
+```
+
+### What challenges might you encounter when implementing a similar program at your school?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("What challenges might you encounter when implementing a similar program at your school?")
+```
+
+# Day 3
+
+## Middle
+
+### What are two take-a-ways that you have from the Jo Boaler videos and curriculum?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("What are two take-a-ways that you have from the Jo Boaler videos and curriculum?")
+```
+
+### I used to think that Data Science was …, now I think …
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("I used to think that Data Science was …, now I think …")
+```
+
+## End
+
+### After this professional development, what are you most excited to implement in your classroom next year?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("After this professional development, what are you most excited to implement in your classroom next year?")
+```
+
+### What do you see as the biggest challenges about implementing Data Science for you in your classroom? What do you see as the biggest challenges at the building level?  The district level? The state level?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("What do you see as the biggest challenges about implementing Data Science for you in your classroom? What do you see as the biggest challenges at the building level?  The district level? The state level?")
+```
+
+### What future professional development opportunities would you like to see around Data Science?
+
+```{r}
+survey_tokens %>% 
+  graph_token_freq("What future professional development opportunities would you like to see around Data Science?")
+```
